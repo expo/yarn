@@ -24,9 +24,10 @@ export default class PackageFetcher {
 
   async fetchCache(dest: string, fetcher: Fetchers): Promise<FetchedMetadata> {
     const {hash, package: pkg} = await this.config.readPackageMetadata(dest);
+    const resolved = await fetcher.getResolvedFromCached(hash);
     return {
       package: pkg,
-      resolved: await fetcher.getResolvedFromCached(hash),
+      resolved,
       hash,
       dest,
       cached: true,
@@ -101,6 +102,11 @@ export default class PackageFetcher {
       if (newPkg) {
         // update with fresh manifest
         await this.resolver.updateManifest(ref, newPkg);
+      }
+
+      if (newPkg._remote.resolved && (newPkg._remote.resolved.startsWith('http:') || newPkg._remote.resolved.startsWith('https:'))) {
+        console.log(newPkg._remote);
+        throw new Error('bah');
       }
 
       if (tick) {

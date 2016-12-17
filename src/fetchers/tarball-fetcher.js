@@ -91,7 +91,9 @@ export default class TarballFetcher extends BaseFetcher {
       .on('end', () => {
         const expectHash = this.hash;
         const actualHash = validateStream.getHash();
+        console.log('onEnd');
         if (!expectHash || expectHash === actualHash) {
+          console.log(mirrorPath);
           resolve({
             hash: actualHash,
             resolved: mirrorPath ? `${mirrorPath}#${actualHash}` : null,
