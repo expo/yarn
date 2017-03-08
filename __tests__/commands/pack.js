@@ -14,7 +14,7 @@ const os = require('os');
 const stream = require('stream');
 
 const zlib = require('zlib');
-const tarFs = require('tar-fs');
+const tar = require('tar');
 const fs2 = require('fs');
 
 const fixturesLoc = path.join(__dirname, '..', 'fixtures', 'pack');
@@ -83,12 +83,8 @@ export async function getFilesFromArchive(source, destination): Promise<Array<st
   const unzip = new Promise((resolve, reject) => {
     fs2.createReadStream(source)
       .pipe(new zlib.Gunzip())
-      .pipe(tarFs.extract(destination, {
-        strip: 1,
-        dmode: 0o555, // all dirs should be readable
-        fmode: 0o444, // all files should be readable
-      }))
-      .on('finish', resolve)
+      .pipe(tar.Extract({path: destination, strip: 1}))
+      .on('end', resolve)
       .on('error', reject);
   });
   await unzip;

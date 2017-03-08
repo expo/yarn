@@ -12,7 +12,7 @@ import ROOT_USER from '../util/root-user.js';
 
 const invariant = require('invariant');
 const path = require('path');
-const tarFs = require('tar-fs');
+const tar = require('tar');
 const url = require('url');
 const fs = require('fs');
 
@@ -78,11 +78,7 @@ export default class TarballFetcher extends BaseFetcher {
   } {
     const validateStream = new crypto.HashStream();
     const extractorStream = new UnpackStream();
-    const untarStream = tarFs.extract(this.dest, {
-      strip: 1,
-      dmode: 0o555, // all dirs should be readable
-      fmode: 0o444, // all files should be readable
-    });
+    const untarStream = tar.Extract({path: this.dest, strip: 1});
 
     extractorStream
       .pipe(untarStream)
@@ -93,7 +89,7 @@ export default class TarballFetcher extends BaseFetcher {
           entry.props.gid = entry.gid = 0;
         }
       })
-      .on('finish', () => {
+      .on('end', () => {
         const expectHash = this.hash;
         const actualHash = validateStream.getHash();
         if (!expectHash || expectHash === actualHash) {
