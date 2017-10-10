@@ -234,8 +234,10 @@ export function main({
     reporter.warn(reporter.lang('networkWarning'));
   }
 
+  const cwd = findProjectRoot(commander.cwd);
+
   //
-  if (command.requireLockfile && !fs.existsSync(path.join(config.cwd, constants.LOCKFILE_FILENAME))) {
+  if (command.requireLockfile && !fs.existsSync(path.join(cwd, constants.LOCKFILE_FILENAME))) {
     reporter.error(reporter.lang('noRequiredLockfile'));
     exit(1);
     return;
@@ -407,7 +409,13 @@ export function main({
 
   function onUnexpectedError(err: Error) {
     function indent(str: string): string {
-      return '\n  ' + str.trim().split('\n').join('\n  ');
+      return (
+        '\n  ' +
+        str
+          .trim()
+          .split('\n')
+          .join('\n  ')
+      );
     }
 
     const log = [];
@@ -454,8 +462,6 @@ export function main({
 
     return errorReportLoc;
   }
-
-  const cwd = findProjectRoot(commander.cwd);
 
   config
     .init({
