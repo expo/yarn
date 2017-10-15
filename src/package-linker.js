@@ -49,6 +49,7 @@ export default class PackageLinker {
     this.config = config;
     this.artifacts = {};
     this.topLevelBinLinking = true;
+    this._linkTypeDepsLocations = [];
   }
 
   artifacts: InstallArtifacts;
@@ -56,6 +57,7 @@ export default class PackageLinker {
   resolver: PackageResolver;
   config: Config;
   topLevelBinLinking: boolean;
+  _linkTypeDepsLocations: Array<string>;
 
   setArtifacts(artifacts: InstallArtifacts) {
     this.artifacts = artifacts;
@@ -66,6 +68,10 @@ export default class PackageLinker {
   }
 
   async linkSelfDependencies(pkg: Manifest, pkgLoc: string, targetBinLoc: string): Promise<void> {
+    // Don't create the link if the target is within a symlinked dependency
+    if (this._isChildOfLinkedDep(targetBinLoc)) {
+      return;
+    }
     targetBinLoc = path.join(targetBinLoc, '.bin');
     await fs.mkdirp(targetBinLoc);
     targetBinLoc = await fs.realpath(targetBinLoc);
@@ -179,6 +185,8 @@ export default class PackageLinker {
         // with a symlink source
         src = remote.reference;
         type = 'symlink';
+        // store the dest location for later usage
+        this._linkTypeDepsLocations.push(dest);
       } else if (workspaceLayout && remote.type === 'workspace') {
         src = remote.reference;
         type = 'symlink';
@@ -504,6 +512,17 @@ export default class PackageLinker {
 
   _satisfiesPeerDependency(range: string, version: string): boolean {
     return range === '*' || satisfiesWithPreleases(version, range, this.config.looseSemver);
+  }
+
+  _isChildOfLinkedDep(pkgLocation: string): boolean {
+    const isWithinLink = false;
+    const pkgNodeModulesLoc = path.join(pkgLocation, 'node_modules');
+    for (const loc of this._linkTypeDepsLocations) {
+      if (pkgNodeModulesLoc.startsWith(loc)) {
+        return true;
+      }
+    }
+    return isWithinLink;
   }
 
   async _warnForMissingBundledDependencies(pkg: Manifest): Promise<void> {
