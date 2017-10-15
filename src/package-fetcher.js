@@ -26,8 +26,10 @@ async function fetchOne(ref: PackageReference, config: Config): Promise<FetchedM
   const remote = ref.remote;
   // Mock metadata for symlinked dependencies
   if (remote.type === 'link') {
-    const mockPkg: Manifest = {_uid: '', name: '', version: '0.0.0'};
-    return Promise.resolve({resolved: null, hash: '', dest, package: mockPkg, cached: false});
+    const manifest: Manifest = !await fs.exists(remote.reference)
+      ? {_uid: '', name: '', version: '0.0.0'}
+      : await config.readManifest(remote.reference);
+    return Promise.resolve({resolved: null, hash: remote.hash || '', dest, package: manifest, cached: false});
   }
 
   const Fetcher = fetchers[remote.type];
