@@ -3,6 +3,7 @@
 import type Config from './config.js';
 import type {LockManifest} from './lockfile';
 import * as constants from './constants.js';
+import {hash} from './util/crypto';
 import * as fs from './util/fs.js';
 import {sortAlpha, compareSortedArrays} from './util/misc.js';
 import {getSystemParams} from './util/package-name-utils.js';
@@ -16,6 +17,7 @@ export const integrityErrors = {
   EXPECTED_IS_NOT_A_JSON: 'integrityFailedExpectedIsNotAJSON',
   FILES_MISSING: 'integrityFailedFilesMissing',
   LOCKFILE_DONT_MATCH: 'integrityLockfilesDontMatch',
+  FILE_OR_LINK_MANIFESTS_DONT_MATCH: 'integrityFileOrLinkManifestDontMatch',
   FLAGS_DONT_MATCH: 'integrityFlagsDontMatch',
   LINKED_MODULES_DONT_MATCH: 'integrityCheckLinkedModulesDontMatch',
   PATTERNS_DONT_MATCH: 'integrityPatternsDontMatch',
@@ -49,6 +51,9 @@ type IntegrityFile = {
   },
   files: Array<string>,
   artifacts: ?InstallArtifacts,
+  fileOrLinkModuleIntegrity: {
+    [key: string]: string,
+  },
 };
 
 type IntegrityFlags = {
@@ -64,6 +69,7 @@ const INTEGRITY_FILE_DEFAULTS = () => ({
   topLevelPatterns: [],
   lockfileEntries: {},
   files: [],
+  fileOrLinkModuleIntegrity: {},
 });
 
 /**
@@ -269,6 +275,29 @@ export default class InstallationIntegrityChecker {
         .sort(sortAlpha);
     }
 
+    // For any file: or link: dependencies, lets look at the package.json
+    // of these dependencies and md5 hash, so that if it updates, we know
+    // to re-yarn.
+    const fileDepPatterns = result.topLevelPatterns.filter(p => p.indexOf('@file:') !== -1);
+    const linkDepPatterns = result.topLevelPatterns.filter(p => p.indexOf('@link:') !== -1);
+    if (fileDepPatterns.length || linkDepPatterns.length) {
+      const allFileLinkPatterns = [].concat(fileDepPatterns, linkDepPatterns);
+      for (const pattern of allFileLinkPatterns) {
+        const fileLinkPatternMatches = pattern.match(/@(?:link|file):(.*)/);
+        if (!fileLinkPatternMatches) {
+          continue;
+        }
+        const packagePath = fileLinkPatternMatches[1];
+        const resolvedPackagePath = path.resolve(this.config.lockfileFolder, packagePath);
+        const packageManifestLocation = path.join(resolvedPackagePath, 'package.json');
+        if (!await fs.exists(packageManifestLocation)) {
+          continue;
+        }
+        const packageJsonRaw = await fs.readFile(packageManifestLocation);
+        result.fileOrLinkModuleIntegrity[resolvedPackagePath] = hash(packageJsonRaw);
+      }
+    }
+
     return result;
   }
 
@@ -293,6 +322,15 @@ export default class InstallationIntegrityChecker {
   ): 'OK' | IntegrityError {
     if (!expected) {
       return 'EXPECTED_IS_NOT_A_JSON';
+    }
+
+    // If we have top level dependencies that are link: types, let's
+    // always fail the integrity check, so that we can refresh the manifest
+    // from the linked dependency
+    for (const key of Object.keys(actual.fileOrLinkModuleIntegrity)) {
+      if (actual.fileOrLinkModuleIntegrity[key] !== expected.fileOrLinkModuleIntegrity[key]) {
+        return 'FILE_OR_LINK_MANIFESTS_DONT_MATCH';
+      }
     }
 
     if (!compareSortedArrays(actual.linkedModules, expected.linkedModules)) {
