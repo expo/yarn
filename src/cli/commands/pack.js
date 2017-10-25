@@ -48,10 +48,12 @@ const NEVER_IGNORE = ignoreLinesToRegex([
   '!/+(changes|changelog|history)*',
 ]);
 
-export async function packTarball(
+export async function getFilesToPack(
   config: Config,
-  {mapHeader}: {mapHeader?: Object => Object} = {},
-): Promise<stream$Duplex> {
+): Promise<{
+  keepFiles: Set<string>,
+  ignoreFiles: Set<string>,
+}> {
   const pkg = await config.readRootManifest();
   const {bundledDependencies, main, files: onlyFiles} = pkg;
 
@@ -108,8 +110,14 @@ export async function packTarball(
   const possibleKeepFiles: Set<string> = new Set();
 
   // apply filters
-  sortFilter(files, filters, keepFiles, possibleKeepFiles, ignoredFiles);
+  return sortFilter(files, filters, keepFiles, possibleKeepFiles, ignoredFiles);
+}
 
+export async function packTarball(
+  config: Config,
+  {mapHeader}: {mapHeader?: Object => Object} = {},
+): Promise<stream$Duplex> {
+  const {keepFiles} = await getFilesToPack(config);
   const packer = tar.pack(config.cwd, {
     ignore: name => {
       const relative = path.relative(config.cwd, name);
