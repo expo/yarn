@@ -303,6 +303,7 @@ async function buildActionsForCopy(
       }
     } else if (srcStat.isFile()) {
       onFresh();
+      await mkdirp(path.dirname(dest));
       actions.file.push({
         src,
         dest,
@@ -741,15 +742,15 @@ export async function walk(
     const loc = path.join(dir, name);
     const stat = await lstat(loc);
 
-    files.push({
-      relative,
-      basename: name,
-      absolute: loc,
-      mtime: +stat.mtime,
-    });
-
     if (stat.isDirectory()) {
       files = files.concat(await walk(loc, relative, ignoreBasenames));
+    } else {
+      files.push({
+        relative,
+        basename: name,
+        absolute: loc,
+        mtime: +stat.mtime,
+      });
     }
   }
 
