@@ -28,6 +28,15 @@ export function sortFilter(
   for (const file of files) {
     let keep = false;
 
+    for (const filter of filters) {
+      const isNegation = filter.startsWith('!');
+      if (isNegation && mm.isMatch(file, filter.slice(1))) {
+        keep = false;
+      } else if (!isNegation && mm.isMatch(file, filter)) {
+        keep = true;
+      }
+    }
+
     // always keep a file if a ! pattern matches it
     for (const filter of filters) {
       if (filter.isNegation && matchesFilter(filter, file.basename, file.relative)) {
@@ -127,6 +136,9 @@ export function ignoreLinesToRegex(lines: Array<string>, base: string = '.'): Ar
         }
 
         // remove trailing slash
+        if (pattern.endsWith('/')) {
+          pattern += '**';
+        }
         pattern = removeSuffix(pattern, '/');
 
         const regex: ?RegExp = mm.makeRe(pattern.trim(), {nocase: true});

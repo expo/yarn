@@ -2,10 +2,10 @@
 
 import type {Reporter} from '../../reporters/index.js';
 import type Config from '../../config.js';
-import type {IgnoreFilter} from '../../util/filter.js';
 import * as fs from '../../util/fs.js';
-import {sortFilter, ignoreLinesToRegex, filterOverridenGitignores} from '../../util/filter.js';
+import {ignoreLinesToRegex, filterOverridenGitignores} from '../../util/filter.js';
 import {MessageError} from '../../errors.js';
+import micromatch from 'micromatch';
 
 const zlib = require('zlib');
 const path = require('path');
@@ -14,113 +14,169 @@ const fs2 = require('fs');
 
 const FOLDERS_IGNORE = [
   // never allow version control folders
-  '.git',
-  'CVS',
-  '.svn',
-  '.hg',
-
-  'node_modules',
+  '**/.git/',
+  '**/.git/**',
+  '**/CVS',
+  '**/CVS/**',
+  '**/.svn',
+  '**/.svn/**',
+  '**/.hg',
+  '**/.hg/**',
 ];
 
-const DEFAULT_IGNORE = ignoreLinesToRegex([
+const DEFAULT_IGNORE = [
   ...FOLDERS_IGNORE,
 
+  '**/.yarnignore',
+  '**/.npmignore',
+  '**/.gitignore',
+
   // ignore cruft
-  'yarn.lock',
-  '.lock-wscript',
-  '.wafpickle-{0..9}',
-  '*.swp',
-  '._*',
-  'npm-debug.log',
-  'yarn-error.log',
-  '.npmrc',
-  '.yarnrc',
-  '.npmignore',
-  '.gitignore',
-  '.DS_Store',
-]);
+  '**/.DS_Store',
+  '**/yarn.lock',
+  '**/.lock-wscript',
+  '**/.wafpickle-{0..9}',
+  '**/build/config.gypi',
+  '**/*.swp',
+  '**/._*',
+  '**/*.orig',
+  '**/npm-debug.log',
+  '**/yarn-error.log',
+  '**/.npmrc',
+  '**/.yarnrc',
+  '**/package-lock.json',
+];
 
-const NEVER_IGNORE = ignoreLinesToRegex([
+const NEVER_IGNORE = [
   // never ignore these files
-  '!/package.json',
-  '!/readme*',
-  '!/+(license|licence)*',
-  '!/+(changes|changelog|history)*',
-]);
+  'package.json',
+  '@(readme|license|licence|notice|changes|changelog|history)?(.*)',
+];
 
-export async function packTarball(
-  config: Config,
-  {mapHeader}: {mapHeader?: Object => Object} = {},
-): Promise<stream$Duplex> {
+export async function getFilesToPack(config: Config): Promise<Set<string>> {
   const pkg = await config.readRootManifest();
-  const {bundledDependencies, main, files: onlyFiles} = pkg;
+  const {bundleDependencies, main, files: onlyFiles} = pkg;
 
   // include required files
-  let filters: Array<IgnoreFilter> = NEVER_IGNORE.slice();
-  // include default filters unless `files` is used
-  if (!onlyFiles) {
-    filters = filters.concat(DEFAULT_IGNORE);
-  }
-  if (main) {
-    filters = filters.concat(ignoreLinesToRegex(['!/' + main]));
-  }
-
-  // include bundledDependencies
-  if (bundledDependencies) {
-    const folder = config.getFolder(pkg);
-    filters = ignoreLinesToRegex(bundledDependencies.map((name): string => `!${folder}/${name}`), '.');
-  }
+  const filters: {[path: string]: Array<string>} = {
+    '.': [],
+  };
 
   // `files` field
   if (onlyFiles) {
-    let lines = [
-      '*', // ignore all files except those that are explicitly included with a negation filter
-      '.*', // files with "." as first character have to be excluded explicitly
-    ];
-    lines = lines.concat(
-      onlyFiles.map((filename: string): string => `!${filename}`),
-      onlyFiles.map((filename: string): string => `!${path.join(filename, '**')}`),
+    filters['.'] = filters['.'].concat(
+      onlyFiles.map((filename: string): string => `${filename}`),
+      onlyFiles.map((filename: string): string => `${path.join(filename, '**')}`),
     );
-    const regexes = ignoreLinesToRegex(lines, '.');
-    filters = filters.concat(regexes);
+  } else {
+    // include default filters unless `files` is used
+    filters['.'] = filters['.'].concat(
+      ['*', '*/**'], // include everything
+      DEFAULT_IGNORE.map(l => '!' + l), //ignore the defaults
+    );
   }
 
-  const files = await fs.walk(config.cwd, null, new Set(FOLDERS_IGNORE));
+  // Include NEVER_IGNORE
+  filters['.'] = filters['.'].concat(NEVER_IGNORE.slice());
+
+  if (main) {
+    filters['.'] = filters['.'].concat([main]);
+  }
+
+  const foldersToIgnore = new Set(FOLDERS_IGNORE);
+
+  // include bundledDependencies
+  if (bundleDependencies) {
+    const folder = config.getFolder(pkg);
+    filters['.'] = filters['.'].concat(bundleDependencies.map((name): string => `${folder}/${name}/**`));
+  } else {
+    foldersToIgnore.add('node_modules');
+  }
+
+  const files = await fs.walk(config.cwd, null, foldersToIgnore);
   const dotIgnoreFiles = filterOverridenGitignores(files);
 
   // create ignores
   for (const file of dotIgnoreFiles) {
     const raw = await fs.readFile(file.absolute);
     const lines = raw.split('\n');
-
     const regexes = ignoreLinesToRegex(lines, path.dirname(file.relative));
-    filters = filters.concat(regexes);
+    if (!filters[path.dirname(file.relative)]) {
+      filters[path.dirname(file.relative)] = [];
+    }
+    filters[path.dirname(file.relative)].unshift(
+      ...regexes.map(filter => {
+        let patt = filter.pattern;
+        if (!filter.isNegation) {
+          patt = `!${patt}`;
+        }
+        return patt;
+      }),
+    );
   }
 
-  // files to definitely keep, takes precedence over ignore filter
-  const keepFiles: Set<string> = new Set();
+  function getNearestFilterSet(filename: string): {base: string, filters: Array<string>} {
+    const dir = path.dirname(filename);
+    if (filters[dir]) {
+      return {base: dir, filters: filters[dir]};
+    }
+    return getNearestFilterSet(dir);
+  }
 
-  // files to definitely ignore
-  const ignoredFiles: Set<string> = new Set();
+  function filterWithFilterSet(filename: string, base: string, filterSet: Array<string>): boolean {
+    const pathRelativeToFilterSet = path.relative(base, filename);
 
-  // list of files that didn't match any of our patterns, if a directory in the chain above was matched
-  // then we should inherit it
-  const possibleKeepFiles: Set<string> = new Set();
+    const mmOpts = {
+      dot: true,
+      nocase: true,
+    };
+    let keep = false;
+    if (filterSet) {
+      for (const filter of filterSet) {
+        const isNegation = filter.startsWith('!');
 
-  // apply filters
-  sortFilter(files, filters, keepFiles, possibleKeepFiles, ignoredFiles);
-
-  const packer = tar.pack(config.cwd, {
-    ignore: name => {
-      const relative = path.relative(config.cwd, name);
-      // Don't ignore directories, since we need to recurse inside them to check for unignored files.
-      if (fs2.lstatSync(name).isDirectory()) {
-        const isParentOfKeptFile = Array.from(keepFiles).some(name => !path.relative(relative, name).startsWith('..'));
-        return !isParentOfKeptFile;
+        // Negation and match --> don't keep
+        // Not negation and match --> keep
+        // No match and has parent --> run the parent rules
+        if (isNegation && micromatch.isMatch(pathRelativeToFilterSet, filter.slice(1), mmOpts)) {
+          keep = false;
+        } else if (!isNegation && micromatch.isMatch(pathRelativeToFilterSet, filter, mmOpts)) {
+          keep = true;
+        } else if (base !== '.') {
+          const {base: parentBase, filters: parentFilterSet} = getNearestFilterSet(base);
+          if (parentFilterSet && parentBase) {
+            return filterWithFilterSet(filename, parentBase, parentFilterSet);
+          }
+        }
       }
-      // Otherwise, ignore a file if we're not supposed to keep it.
-      return !keepFiles.has(relative);
-    },
+    }
+
+    return keep;
+  }
+
+  const keepFiles = new Set();
+  for (const f of files) {
+    const file = f.relative;
+    let keep = false;
+
+    const {base, filters: nearestFilterSet} = getNearestFilterSet(file);
+    keep = filterWithFilterSet(file, base, nearestFilterSet);
+
+    if (keep) {
+      keepFiles.add(file);
+    }
+  }
+
+  return keepFiles;
+}
+
+export async function packTarball(
+  config: Config,
+  {mapHeader}: {mapHeader?: Object => Object} = {},
+): Promise<stream$Duplex> {
+  const filesToPack = await getFilesToPack(config);
+  const packer = tar.pack(config.cwd, {
+    entries: [...filesToPack.values()],
     map: header => {
       const suffix = header.name === '.' ? '' : `/${header.name}`;
       header.name = `package${suffix}`;
@@ -129,7 +185,6 @@ export async function packTarball(
       return mapHeader ? mapHeader(header) : header;
     },
   });
-
   return packer;
 }
 
